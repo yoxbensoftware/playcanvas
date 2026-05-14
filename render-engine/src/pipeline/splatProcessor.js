@@ -166,18 +166,123 @@ async function lumaAiProcessor(framesDir, jobId, onProgress, options = {}) {
 }
 
 // -------------------------------------------------------------------
-// Yerel COLMAP + 3DGS processor
-// Gereksinimler: NVIDIA CUDA GPU, COLMAP, gaussian-splatting repo
-// Windows için WSL2 veya Docker önerilir
+// Yerel COLMAP + nerfstudio splatfacto processor
+// Gereksinimler: COLMAP (colmap.exe), nerfstudio conda ortamı
+// CUDA GPU gerekli (RTX 4070 Laptop GPU ✓)
 // -------------------------------------------------------------------
 async function colmapProcessor(framesDir, jobId, onProgress) {
-  // TODO: Yerel pipeline
-  // 1. COLMAP ile Structure from Motion (kamera pozisyonları)
-  //    spawn('colmap', ['automatic_reconstructor', ...])
-  // 2. 3DGS training
-  //    spawn('python', ['train.py', '--source_path', framesDir, ...])
-  // 3. Output .ply dosyasını splat-transform ile optimize et
-  throw new Error(
-    'COLMAP processor henüz implemente edilmedi. GPU sunucusu hazır olduğunda aktive edilecek.'
-  );
+  const { spawn } = await import('child_process');
+  const fsAsync = (await import('fs')).promises;
+
+  const nsDataDir  = path.join(config.uploadsDir, 'nsdata',     jobId);
+  const nsTrainDir = path.join(config.uploadsDir, 'nstraining', jobId);
+  const outputDir  = path.join(config.uploadsDir, 'output');
+
+  await fsAsync.mkdir(nsDataDir,  { recursive: true });
+  await fsAsync.mkdir(nsTrainDir, { recursive: true });
+  await fsAsync.mkdir(outputDir,  { recursive: true });
+
+  // Komut çalıştırıcı — stdout/stderr loglar, 0 olmayan çıkışta hata fırlatır
+  function runCommand(exe, args, label) {
+    return new Promise((resolve, reject) => {
+      console.log(`[${label}] ${path.basename(exe)} ${args.slice(0, 4).join(' ')} ...`);
+      const proc = spawn(exe, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+      proc.stdout.on('data', d => process.stdout.write(`[${label}] ${d}`));
+      proc.stderr.on('data', d => process.stderr.write(`[${label}] ${d}`));
+      proc.on('close', code => {
+        if (code === 0) resolve();
+        else reject(new Error(`${label} exit code: ${code}`));
+      });
+      proc.on('error', reject);
+    });
+  }
+
+  // Klasördeki en yeni config.yml'yi bulur
+  async function findNewestConfig(dir) {
+    const walk = async (d) => {
+      const entries = await fsAsync.readdir(d, { withFileTypes: true });
+      const files = [];
+      for (const e of entries) {
+        const full = path.join(d, e.name);
+        if (e.isDirectory()) files.push(...(await walk(full)));
+        else if (e.name === 'config.yml') files.push(full);
+      }
+      return files;
+    };
+    const configs = await walk(dir);
+    if (configs.length === 0) throw new Error('nerfstudio config.yml bulunamadı');
+    // En yeni olanı döndür
+    const stats = await Promise.all(configs.map(f => fsAsync.stat(f).then(s => ({ f, t: s.mtimeMs }))));
+    return stats.sort((a, b) => b.t - a.t)[0].f;
+  }
+
+  // 1. ns-process-data: framelerden COLMAP sparse reconstruction
+  onProgress(10);
+  console.log(`[job:${jobId}] ns-process-data başlatılıyor...`);
+  await runCommand(config.nsProcessData, [
+    'images',
+    '--data',        framesDir,
+    '--output-dir',  nsDataDir,
+    '--colmap-cmd',  config.colmapExe,
+    '--verbose',
+  ], `ns-proc:${jobId.slice(0, 6)}`);
+  onProgress(30);
+
+  // 2. ns-train splatfacto: 3DGS eğitimi (~10-30 dk, VRAM'a göre değişir)
+  console.log(`[job:${jobId}] ns-train splatfacto başlatılıyor (~10-30 dk)...`);
+  await runCommand(config.nsTrain, [
+    'splatfacto',
+    '--data',                            nsDataDir,
+    '--output-dir',                      nsTrainDir,
+    '--max-num-iterations',              '7000',   // 4GB VRAM için optimize
+    '--pipeline.model.sh-degree',        '0',      // VRAM tasarrufu
+    '--pipeline.model.cull-alpha-thresh','0.005',
+    '--vis',                             'tensorboard',
+  ], `ns-train:${jobId.slice(0, 6)}`);
+  onProgress(82);
+
+  // 3. Config dosyasını bul
+  const configPath = await findNewestConfig(nsTrainDir);
+  console.log(`[job:${jobId}] Config: ${configPath}`);
+
+  // 4. ns-export: .ply dosyasını dışa aktar
+  const plyJobDir = path.join(outputDir, jobId);
+  await fsAsync.mkdir(plyJobDir, { recursive: true });
+  console.log(`[job:${jobId}] ns-export gaussian-splat başlatılıyor...`);
+  await runCommand(config.nsExport, [
+    'gaussian-splat',
+    '--load-config', configPath,
+    '--output-dir',  plyJobDir,
+  ], `ns-exp:${jobId.slice(0, 6)}`);
+  onProgress(90);
+
+  // 5. Üretilen .ply dosyasını bul
+  const plyFiles = (await fsAsync.readdir(plyJobDir)).filter(f => f.endsWith('.ply'));
+  if (plyFiles.length === 0) throw new Error('ns-export .ply üretmedi');
+  const plyPath = path.join(plyJobDir, plyFiles[0]);
+  console.log(`[job:${jobId}] .ply: ${plyPath}`);
+
+  // 6. Filesystem servisine yükle
+  onProgress(93);
+  const plyBuffer = fs.readFileSync(plyPath);
+  const formData = new FormData();
+  const blob = new Blob([plyBuffer], { type: 'application/octet-stream' });
+  formData.append('file', blob, `${jobId}.ply`);
+
+  const fsRes = await fetch(`${config.filesystemUrl}/api/files`, {
+    method: 'POST',
+    body: formData,
+  });
+  if (!fsRes.ok) throw new Error(`Filesystem yükleme hatası: ${fsRes.status}`);
+  const fsData = await fsRes.json();
+
+  onProgress(100);
+  console.log(`[job:${jobId}] Tamamlandı. Viewer: ${fsData.viewerUrl}`);
+  return {
+    processor: 'colmap+nerfstudio',
+    splatPath: plyPath,
+    viewerUrl: fsData.viewerUrl,
+    downloadUrl: fsData.downloadUrl,
+    fileId: fsData.fileId,
+  };
 }
