@@ -87,7 +87,7 @@ async function runPipeline(jobId, file) {
 
   const result = await processFramesToSplat(framesDir, jobId, (pct) => {
     updateJob(jobId, { progress: 10 + Math.round(pct * 0.88) });
-  });
+  }, { filePath: file.path, mimetype: file.mimetype });
 
   updateJob(jobId, { status: 'done', progress: 100, result });
   console.log(`[job:${jobId}] Tamamlandı`);

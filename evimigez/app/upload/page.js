@@ -296,37 +296,57 @@ function PipelineTab() {
         </div>
       ) : stage === S.DONE ? (
         <div className="space-y-4">
-          <div className="bg-blue-500/5 border border-blue-500/20 rounded-2xl p-6">
-            <div className="flex items-start gap-3 mb-4">
-              <span className="text-2xl">🔬</span>
-              <div>
-                <p className="font-bold text-blue-300">Pipeline tamamlandı (mock mod)</p>
-                <p className="text-white/40 text-sm mt-1">
-                  Şu an <strong className="text-white/60">mock processor</strong> aktif. Gerçek .ply dosyası üretilmedi.
-                  Gerçek 3DGS için <code className="bg-white/10 px-1 rounded text-xs">PROCESSOR=colmap</code> veya{' '}
-                  <code className="bg-white/10 px-1 rounded text-xs">PROCESSOR=lumaai</code> ayarla.
-                </p>
+          {job?.result?.viewerUrl ? (
+            /* Gerçek 3DGS tamamlandı — viewer linki göster */
+            <>
+              <ResultCard
+                viewerUrl={job.result.viewerUrl}
+                downloadUrl={job.result.downloadUrl}
+                shortId={job.result.fileId?.slice(0, 8)}
+                onCopy={async () => {
+                  await navigator.clipboard.writeText(job.result.viewerUrl);
+                }}
+                copied={false}
+              />
+              <button onClick={reset} className="w-full py-3 rounded-xl bg-white/5 hover:bg-white/10 text-white/60 hover:text-white text-sm transition-colors">
+                Yeni Render Başlat
+              </button>
+            </>
+          ) : (
+            /* Mock mod — gerçek .ply üretilmedi */
+            <>
+              <div className="bg-blue-500/5 border border-blue-500/20 rounded-2xl p-6">
+                <div className="flex items-start gap-3 mb-4">
+                  <span className="text-2xl">🔬</span>
+                  <div>
+                    <p className="font-bold text-blue-300">Pipeline tamamlandı (mock mod)</p>
+                    <p className="text-white/40 text-sm mt-1">
+                      Şu an <strong className="text-white/60">mock processor</strong> aktif. Gerçek .ply dosyası üretilmedi.
+                      Gerçek 3DGS için <code className="bg-white/10 px-1 rounded text-xs">PROCESSOR=lumaai</code> ayarla.
+                    </p>
+                  </div>
+                </div>
+                <div className="bg-white/[0.03] rounded-xl p-3 text-xs font-mono text-white/40 overflow-auto max-h-32">
+                  {JSON.stringify(job?.result, null, 2)}
+                </div>
               </div>
-            </div>
-            <div className="bg-white/[0.03] rounded-xl p-3 text-xs font-mono text-white/40 overflow-auto max-h-32">
-              {JSON.stringify(job?.result, null, 2)}
-            </div>
-          </div>
 
-          <p className="text-white/40 text-sm text-center">
-            Hazır bir <strong className="text-white/70">.ply</strong> dosyanız varsa{' '}
-            <button
-              onClick={reset}
-              className="text-orange-500 hover:text-orange-400 underline"
-            >
-              3D Dosya sekmesini
-            </button>{' '}
-            kullanarak direkt viewer linki alabilirsiniz.
-          </p>
+              <p className="text-white/40 text-sm text-center">
+                Hazır bir <strong className="text-white/70">.ply</strong> dosyanız varsa{' '}
+                <button
+                  onClick={reset}
+                  className="text-orange-500 hover:text-orange-400 underline"
+                >
+                  3D Dosya sekmesini
+                </button>{' '}
+                kullanarak direkt viewer linki alabilirsiniz.
+              </p>
 
-          <button onClick={reset} className="w-full py-3 rounded-xl bg-white/5 hover:bg-white/10 text-white/60 hover:text-white text-sm transition-colors">
-            Yeni Render Başlat
-          </button>
+              <button onClick={reset} className="w-full py-3 rounded-xl bg-white/5 hover:bg-white/10 text-white/60 hover:text-white text-sm transition-colors">
+                Yeni Render Başlat
+              </button>
+            </>
+          )}
         </div>
       ) : null}
     </div>
