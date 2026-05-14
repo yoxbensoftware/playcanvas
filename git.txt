@@ -1,0 +1,9 @@
+git clone https://github.com/playcanvas/engine.git
+git clone https://github.com/playcanvas/model-viewer.git
+git clone https://github.com/playcanvas/react.git
+git clone https://github.com/playcanvas/supersplat-viewer.git
+git clone https://github.com/playcanvas/splat-transform.git
+git clone https://github.com/playcanvas/create-playcanvas.git
+git clone https://github.com/playcanvas/supersplat.git
+git clone https://github.com/playcanvas/editor.git
+git clone https://github.com/playcanvas/pcui.git

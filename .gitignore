@@ -1,0 +1,30 @@
+# Node
+node_modules/
+npm-debug.log*
+
+# Next.js
+.next/
+out/
+
+# Runtime data (yeniden oluşturulabilir)
+render-engine/uploads/
+filesystem/data/
+
+# Env dosyaları (secret varsa)
+# .env.local — biz push ediyoruz çünkü sadece localhost portları var
+
+# OS
+.DS_Store
+Thumbs.db
+
+# PlayCanvas cloned repos — git.txt ile yeniden klonlanabilir
+# Bu klasörler kendi .git'lerine sahip, submodule olarak eklenmediler
+engine/
+model-viewer/
+react/
+supersplat-viewer/
+splat-transform/
+create-playcanvas/
+supersplat/
+editor/
+pcui/
