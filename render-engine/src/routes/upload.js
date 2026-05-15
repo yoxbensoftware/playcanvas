@@ -89,7 +89,7 @@ async function runPipeline(jobId, file) {
 
   let frameCount;
   if (isVideo) {
-    const frames = await extractFrames(file.path, framesDir, 5);
+    const frames = await extractFrames(file.path, framesDir, 10);
     frameCount = frames.length;
     console.log(`[job:${jobId}] ${frameCount} frame çıkarıldı`);
   } else {

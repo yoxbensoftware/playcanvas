@@ -408,13 +408,22 @@ async function runWindowsNerfstudioFallback(framesDir, jobId, onProgress) {
   });
 
   onProgress(20);
+  // Frame sayısına göre matching method seç:
+  // < 600 frame: exhaustive (tüm çiftleri karşılaştırır, loop closure mükemmel)
+  // >= 600 frame: vocab_tree (daha hızlı, büyük veri setleri için)
+  const frameFiles = await fsAsync.readdir(framesDir).catch(() => []);
+  const frameCount2 = frameFiles.filter(f => /\.(jpg|jpeg|png)$/i.test(f)).length;
+  const matchingMethod = frameCount2 < 600 ? 'exhaustive' : 'vocab_tree';
+  console.log(`[job:${jobId}] ${frameCount2} frame tespit edildi → matching: ${matchingMethod}`);
+
   await runExe(config.nsProcessData, [
     'images',
     '--data', framesDir,
     '--output-dir', nsDataDir,
     '--camera-type', 'perspective',
     '--sfm-tool', 'colmap',
-    '--matching-method', 'sequential',
+    '--matching-method', matchingMethod,
+    '--num-downscales', '3',
     '--colmap-cmd', config.colmapExe,
   ], 'ns-proc');
 
@@ -435,6 +444,8 @@ async function runWindowsNerfstudioFallback(framesDir, jobId, onProgress) {
       '--data', nsDataDir,
       '--output-dir', nsTrainDir,
       '--max-num-iterations', String(trainIterations),
+      '--pipeline.model.near-plane', '0.05',
+      '--pipeline.model.far-plane', '100.0',
       '--vis', 'tensorboard',
     ], 'ns-train', { onStdoutLine: parseTrainProgress });
   }

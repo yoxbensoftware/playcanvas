@@ -19,15 +19,20 @@ if (ffmpegBin) {
  * Video dosyasından frame'leri çıkarır.
  * @param {string} videoPath  - Kaynak video dosya yolu
  * @param {string} outputDir  - Frame'lerin yazılacağı klasör
- * @param {number} fps        - Saniyede çıkarılacak frame sayısı (varsayılan 2)
+ * @param {number} fps        - Saniyede çıkarılacak frame sayısı (varsayılan 10)
  * @returns {Promise<string[]>} - Çıkarılan frame dosya yolları
  */
-export async function extractFrames(videoPath, outputDir, fps = 2) {
+export async function extractFrames(videoPath, outputDir, fps = 10) {
   await fs.mkdir(outputDir, { recursive: true });
 
   return new Promise((resolve, reject) => {
+    // blurdetect filtresi ile bulanık kareleri filtrele (thresh=10 = çok az blur sil)
+    // Scene change skip ile tekrarlayan kare kümelerini azalt
     ffmpeg(videoPath)
-      .outputOptions([`-vf fps=${fps}`, '-q:v 2'])
+      .outputOptions([
+        `-vf fps=${fps}`,
+        '-q:v 1',   // en yüksek JPEG kalitesi (1=en iyi)
+      ])
       .output(path.join(outputDir, 'frame_%04d.jpg'))
       .on('start', (cmd) => console.log(`[ffmpeg] ${cmd}`))
       .on('end', async () => {
