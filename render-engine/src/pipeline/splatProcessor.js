@@ -182,11 +182,38 @@ async function colmapProcessor(framesDir, jobId, onProgress) {
   await fsAsync.mkdir(nsTrainDir, { recursive: true });
   await fsAsync.mkdir(outputDir,  { recursive: true });
 
+  // ns-process-data / ns-train / ns-export için genişletilmiş PATH
+  // FFmpeg ve COLMAP'ın nerfstudio Python sürecinden görünmesi için gerekli
+  const FFMPEG_BIN = path.dirname(
+    'C:\\Users\\ozgen\\AppData\\Local\\Microsoft\\WinGet\\Packages\\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\\ffmpeg-8.1.1-full_build\\bin\\ffmpeg.exe'
+  );
+  const COLMAP_BIN = path.dirname(config.colmapExe);
+  const MSVC_BIN = 'C:\\Program Files (x86)\\Microsoft Visual Studio\\2022\\BuildTools\\VC\\Tools\\MSVC\\14.44.35207\\bin\\Hostx64\\x64';
+  const WINDOWS_SDK_ROOT = 'C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.22621.0';
+  const WINDOWS_SDK_LIB = 'C:\\Program Files (x86)\\Windows Kits\\10\\Lib\\10.0.22621.0';
+  const childEnv = {
+    ...process.env,
+    PATH: `${FFMPEG_BIN};${COLMAP_BIN};${MSVC_BIN};${process.env.PATH || ''}`,
+    INCLUDE: [
+      `${WINDOWS_SDK_ROOT}\\ucrt`,
+      `${WINDOWS_SDK_ROOT}\\um`,
+      `${WINDOWS_SDK_ROOT}\\shared`,
+      `${WINDOWS_SDK_ROOT}\\winrt`,
+      `${WINDOWS_SDK_ROOT}\\cppwinrt`,
+      process.env.INCLUDE || '',
+    ].filter(Boolean).join(';'),
+    LIB: [
+      `${WINDOWS_SDK_LIB}\\ucrt\\x64`,
+      `${WINDOWS_SDK_LIB}\\um\\x64`,
+      process.env.LIB || '',
+    ].filter(Boolean).join(';'),
+  };
+
   // Komut çalıştırıcı — stdout/stderr loglar, 0 olmayan çıkışta hata fırlatır
   function runCommand(exe, args, label) {
     return new Promise((resolve, reject) => {
       console.log(`[${label}] ${path.basename(exe)} ${args.slice(0, 4).join(' ')} ...`);
-      const proc = spawn(exe, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+      const proc = spawn(exe, args, { stdio: ['ignore', 'pipe', 'pipe'], env: childEnv });
       proc.stdout.on('data', d => process.stdout.write(`[${label}] ${d}`));
       proc.stderr.on('data', d => process.stderr.write(`[${label}] ${d}`));
       proc.on('close', code => {

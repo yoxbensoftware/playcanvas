@@ -1,8 +1,10 @@
-import 'dotenv/config';
+import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+// .env her zaman render-engine/ kök dizininden yüklenir (cwd'den bağımsız)
+dotenv.config({ path: path.resolve(__dirname, '..', '.env') });
 
 export default {
   port: parseInt(process.env.PORT) || 3001,
