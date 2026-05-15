@@ -107,16 +107,23 @@ function ErrorBanner({ msg, onDismiss }) {
   );
 }
 
-function ResultCard({ viewerUrl, downloadUrl, shortId, onCopy, copied }) {
+function ResultCard({ viewerUrl, downloadUrl, shortId, onCopy, copied, viewerSupported = true, viewerHint = null }) {
   return (
     <div className="bg-green-500/5 border border-green-500/20 rounded-2xl p-6 space-y-4">
       <div className="flex items-center gap-2">
         <span className="w-8 h-8 rounded-full bg-green-500/20 flex items-center justify-center text-lg">✅</span>
         <div>
-          <p className="font-bold text-green-400">3D sahne hazır!</p>
+          <p className="font-bold text-green-400">{viewerSupported ? '3D sahne hazır!' : 'Model üretildi'}</p>
           <p className="text-white/40 text-xs">Link ID: {shortId}</p>
         </div>
       </div>
+
+      {!viewerSupported && (
+        <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-3 text-amber-200 text-sm">
+          Bu dosya point-cloud PLY formatinda oldugu icin 3D onizleme bos gorunebilir.
+          {viewerHint ? ` ${viewerHint}` : ''}
+        </div>
+      )}
 
       <div className="bg-white/[0.04] rounded-xl p-3 flex items-center gap-3">
         <span className="text-white/50 text-sm truncate flex-1 font-mono">{viewerUrl}</span>
@@ -130,14 +137,24 @@ function ResultCard({ viewerUrl, downloadUrl, shortId, onCopy, copied }) {
       </div>
 
       <div className="flex gap-3">
-        <a
-          href={viewerUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="flex-1 text-center bg-orange-500 hover:bg-orange-600 text-white font-bold py-3 rounded-xl text-sm transition-colors"
-        >
-          3D Görünümü Aç ↗
-        </a>
+        {viewerSupported ? (
+          <a
+            href={viewerUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex-1 text-center bg-orange-500 hover:bg-orange-600 text-white font-bold py-3 rounded-xl text-sm transition-colors"
+          >
+            3D Görünümü Aç ↗
+          </a>
+        ) : (
+          <button
+            type="button"
+            disabled
+            className="flex-1 text-center bg-white/5 text-white/35 font-bold py-3 rounded-xl text-sm border border-white/10 cursor-not-allowed"
+          >
+            Bu formatta önizleme yok
+          </button>
+        )}
         {downloadUrl && (
           <a
             href={downloadUrl}
@@ -303,6 +320,8 @@ function PipelineTab() {
                 viewerUrl={job.result.viewerUrl}
                 downloadUrl={job.result.downloadUrl}
                 shortId={job.result.fileId?.slice(0, 8)}
+                viewerSupported={job.result.viewerSupported !== false}
+                viewerHint={job.result.viewerHint}
                 onCopy={async () => {
                   await navigator.clipboard.writeText(job.result.viewerUrl);
                 }}
@@ -475,6 +494,8 @@ function DirectTab() {
             viewerUrl={result.viewerUrl}
             downloadUrl={result.downloadUrl}
             shortId={result.shortId}
+            viewerSupported={result.viewerSupported !== false}
+            viewerHint={result.viewerHint}
             onCopy={copyLink}
             copied={copied}
           />

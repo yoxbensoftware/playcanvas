@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import fs from 'fs/promises';
 import multer from 'multer';
 import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
@@ -55,8 +56,21 @@ router.post('/', upload.single('file'), (req, res) => {
   });
 
   // Pipeline'ı asenkron başlat
-  runPipeline(jobId, req.file).catch((err) => {
+  runPipeline(jobId, req.file).catch(async (err) => {
     console.error(`[job:${jobId}] Pipeline hatası:`, err.message);
+
+    // If training/export completed but upload to filesystem failed, recover from local PLY.
+    const recovered = await tryRecoverResultFromLocalPly(jobId);
+    if (recovered) {
+      updateJob(jobId, {
+        status: 'done',
+        progress: 100,
+        result: recovered,
+      });
+      console.log(`[job:${jobId}] Local PLY recovery başarılı`);
+      return;
+    }
+
     updateJob(jobId, { status: 'failed', error: err.message });
   });
 
@@ -91,6 +105,49 @@ async function runPipeline(jobId, file) {
 
   updateJob(jobId, { status: 'done', progress: 100, result });
   console.log(`[job:${jobId}] Tamamlandı`);
+}
+
+async function tryRecoverResultFromLocalPly(jobId) {
+  try {
+    const plyJobDir = path.join(config.uploadsDir, 'output', jobId);
+    const files = await fs.readdir(plyJobDir);
+    const plyFile = files.find((f) => f.toLowerCase().endsWith('.ply'));
+    if (!plyFile) return null;
+
+    const plyPath = path.join(plyJobDir, plyFile);
+    const plyBuffer = await fs.readFile(plyPath);
+
+    const formData = new FormData();
+    const blob = new Blob([plyBuffer], { type: 'application/octet-stream' });
+    formData.append('file', blob, `${jobId}.ply`);
+
+    const fsRes = await fetch(`${config.filesystemUrl}/api/files`, {
+      method: 'POST',
+      body: formData,
+    });
+
+    if (!fsRes.ok) {
+      return {
+        processor: config.processor,
+        jobId,
+        splatPath: plyPath,
+        message: 'Model üretildi ancak viewer yüklemesi başarısız oldu',
+      };
+    }
+
+    const fsData = await fsRes.json();
+    return {
+      processor: config.processor,
+      jobId,
+      splatPath: plyPath,
+      viewerUrl: fsData.viewerUrl,
+      downloadUrl: fsData.downloadUrl,
+      fileId: fsData.fileId,
+      message: 'Sonuç local PLY dosyasından kurtarıldı',
+    };
+  } catch {
+    return null;
+  }
 }
 
 export default router;

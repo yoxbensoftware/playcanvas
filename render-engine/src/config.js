@@ -17,4 +17,7 @@ export default {
   nsProcessData: process.env.NS_PROCESS_DATA || 'C:\\Users\\ozgen\\miniconda3\\envs\\nerfstudio\\Scripts\\ns-process-data.exe',
   nsTrain: process.env.NS_TRAIN || 'C:\\Users\\ozgen\\miniconda3\\envs\\nerfstudio\\Scripts\\ns-train.exe',
   nsExport: process.env.NS_EXPORT || 'C:\\Users\\ozgen\\miniconda3\\envs\\nerfstudio\\Scripts\\ns-export.exe',
+  nsTrainIterationsSplat: parseInt(process.env.NS_TRAIN_ITERATIONS_SPLAT || '3000', 10),
+  nsTrainIterationsNerfacto: parseInt(process.env.NS_TRAIN_ITERATIONS_NERFACTO || '1200', 10),
+  nsExportNumPoints: parseInt(process.env.NS_EXPORT_NUM_POINTS || '350000', 10),
 };

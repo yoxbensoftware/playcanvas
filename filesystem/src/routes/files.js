@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import multer from 'multer';
+import fs from 'fs';
 import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import config from '../config.js';
@@ -30,6 +31,44 @@ const upload = multer({
   },
 });
 
+function inspectViewerSupport(filePath, ext) {
+  const lower = ext.toLowerCase();
+  if (lower === '.splat' || lower === '.glb' || lower === '.gltf') {
+    return { viewerSupported: true, viewerHint: null };
+  }
+
+  if (lower !== '.ply') {
+    return { viewerSupported: true, viewerHint: null };
+  }
+
+  try {
+    const fd = fs.openSync(filePath, 'r');
+    const buffer = Buffer.alloc(32 * 1024);
+    const bytesRead = fs.readSync(fd, buffer, 0, buffer.length, 0);
+    fs.closeSync(fd);
+
+    const header = buffer.subarray(0, bytesRead).toString('utf8');
+    const looksLikeGaussian =
+      /property\s+float\s+scale_0/.test(header) ||
+      /property\s+float\s+opacity/.test(header) ||
+      /property\s+float\s+f_dc_0/.test(header);
+
+    if (looksLikeGaussian) {
+      return { viewerSupported: true, viewerHint: null };
+    }
+
+    return {
+      viewerSupported: false,
+      viewerHint: 'Bu PLY point-cloud formatinda. Supersplat viewer Gaussian-Splat PLY bekliyor.',
+    };
+  } catch {
+    return {
+      viewerSupported: false,
+      viewerHint: 'Dosya basligi okunamadi. Viewer uyumlulugu dogrulanamadi.',
+    };
+  }
+}
+
 // POST /api/files
 // Multipart field: "file"
 // Opsiyonel body: { label: "Kadıköy 3+1 Daire" }
@@ -38,6 +77,8 @@ router.post('/', upload.single('file'), (req, res) => {
 
   const fileId = uuidv4();
   const shortId = uuidv4().replace(/-/g, '').slice(0, 10);
+  const ext = path.extname(req.file.originalname).toLowerCase();
+  const formatInfo = inspectViewerSupport(req.file.path, ext);
 
   saveFile(fileId, {
     filename: req.file.filename,
@@ -45,6 +86,8 @@ router.post('/', upload.single('file'), (req, res) => {
     size: req.file.size,
     label: req.body?.label || req.file.originalname,
     shortId,
+    viewerSupported: formatInfo.viewerSupported,
+    viewerHint: formatInfo.viewerHint,
   });
 
   registerLink(shortId, fileId);
@@ -54,7 +97,14 @@ router.post('/', upload.single('file'), (req, res) => {
 
   console.log(`[filesystem] Dosya kaydedildi: ${fileId} → ${viewerUrl}`);
 
-  res.status(201).json({ fileId, shortId, viewerUrl, downloadUrl });
+  res.status(201).json({
+    fileId,
+    shortId,
+    viewerUrl,
+    downloadUrl,
+    viewerSupported: formatInfo.viewerSupported,
+    viewerHint: formatInfo.viewerHint,
+  });
 });
 
 // GET /api/files
