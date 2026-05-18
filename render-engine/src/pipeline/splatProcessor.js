@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import config from '../config.js';
+import { extractFrames } from './frameExtractor.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -29,7 +30,7 @@ export async function processFramesToSplat(framesDir, jobId, onProgress, options
     case 'lumaai':
       return await lumaAiProcessor(framesDir, jobId, onProgress, options);
     case 'colmap':
-      return await colmapProcessor(framesDir, jobId, onProgress);
+      return await colmapProcessor(framesDir, jobId, onProgress, options);
     default:
       throw new Error(`Bilinmeyen processor: ${config.processor}`);
   }
@@ -175,7 +176,7 @@ async function lumaAiProcessor(framesDir, jobId, onProgress, options = {}) {
 // Gereksinimler: WSL 2 + Ubuntu + GPU passthrough
 // CUDA GPU gerekli (RTX 4070 Laptop GPU ✓ via nvidia-smi)
 // -------------------------------------------------------------------
-async function colmapProcessor(framesDir, jobId, onProgress) {
+async function colmapProcessor(framesDir, jobId, onProgress, options = {}) {
   const { spawn } = await import('child_process');
   const fsAsync = (await import('fs')).promises;
 
@@ -312,7 +313,7 @@ async function colmapProcessor(framesDir, jobId, onProgress) {
         }
 
         try {
-          const fallback = await runWindowsNerfstudioFallback(framesDir, jobId, onProgress);
+          const fallback = await runWindowsNerfstudioFallback(framesDir, jobId, onProgress, options);
           resolve(fallback);
         } catch (fallbackErr) {
           reject(new Error(
@@ -326,11 +327,12 @@ async function colmapProcessor(framesDir, jobId, onProgress) {
   });
 }
 
-async function runWindowsNerfstudioFallback(framesDir, jobId, onProgress) {
+async function runWindowsNerfstudioFallback(framesDir, jobId, onProgress, options = {}) {
   const { spawn, spawnSync } = await import('child_process');
   const fsAsync = (await import('fs')).promises;
   const env = buildWindowsNerfstudioEnv();
   const condaRun = resolveCondaRunFromNsTrain();
+  const isPhotoInput = String(options.inputType || '').toLowerCase() === 'images';
 
   const nsDataDir = path.join(config.uploadsDir, 'nsdata', jobId);
   const nsTrainDir = path.join(config.uploadsDir, 'nstraining', jobId);
@@ -407,25 +409,192 @@ async function runWindowsNerfstudioFallback(framesDir, jobId, onProgress) {
     });
   });
 
-  onProgress(20);
-  // Frame sayısına göre matching method seç:
-  // < 600 frame: exhaustive (tüm çiftleri karşılaştırır, loop closure mükemmel)
-  // >= 600 frame: vocab_tree (daha hızlı, büyük veri setleri için)
-  const frameFiles = await fsAsync.readdir(framesDir).catch(() => []);
-  const frameCount2 = frameFiles.filter(f => /\.(jpg|jpeg|png)$/i.test(f)).length;
-  const matchingMethod = frameCount2 < 600 ? 'exhaustive' : 'vocab_tree';
-  console.log(`[job:${jobId}] ${frameCount2} frame tespit edildi → matching: ${matchingMethod}`);
+  const getImageFrameFiles = async (dir) => {
+    const entries = await fsAsync.readdir(dir).catch(() => []);
+    return entries
+      .filter((f) => /\.(jpg|jpeg|png)$/i.test(f))
+      .sort((a, b) => a.localeCompare(b));
+  };
 
-  await runExe(config.nsProcessData, [
-    'images',
-    '--data', framesDir,
-    '--output-dir', nsDataDir,
-    '--camera-type', 'perspective',
-    '--sfm-tool', 'colmap',
-    '--matching-method', matchingMethod,
-    '--num-downscales', '3',
-    '--colmap-cmd', config.colmapExe,
-  ], 'ns-proc');
+  const sampleFramesToDir = async (sourceDir, sourceFiles, targetDir, stride) => {
+    await fsAsync.rm(targetDir, { recursive: true, force: true }).catch(() => {});
+    await fsAsync.mkdir(targetDir, { recursive: true });
+
+    const selected = [];
+    for (let i = 0; i < sourceFiles.length; i += stride) {
+      selected.push(sourceFiles[i]);
+    }
+
+    for (let i = 0; i < selected.length; i += 1) {
+      const file = selected[i];
+      const src = path.join(sourceDir, file);
+      const dst = path.join(targetDir, file);
+      await fsAsync.copyFile(src, dst);
+    }
+
+    return selected.length;
+  };
+
+  const readRegisteredFrameCount = async (nsDataRoot) => {
+    const transformsPath = path.join(nsDataRoot, 'transforms.json');
+    try {
+      const raw = await fsAsync.readFile(transformsPath, 'utf8');
+      const json = JSON.parse(raw);
+      if (!Array.isArray(json.frames)) return 0;
+      return json.frames.length;
+    } catch {
+      return 0;
+    }
+  };
+
+  const nsProcessAttempts = isPhotoInput
+    ? [
+      { name: 'exhaustive-full', matchingMethod: 'exhaustive', stride: 1 },
+      { name: 'sequential-full', matchingMethod: 'sequential', stride: 1 },
+      { name: 'sequential-stride2', matchingMethod: 'sequential', stride: 2 },
+    ]
+    : [
+      { name: 'exhaustive-full', matchingMethod: 'exhaustive', stride: 1 },
+      { name: 'sequential-full', matchingMethod: 'sequential', stride: 1 },
+      { name: 'sequential-stride2', matchingMethod: 'sequential', stride: 2 },
+      { name: 'sequential-stride3', matchingMethod: 'sequential', stride: 3 },
+      { name: 'vocab-stride2', matchingMethod: 'vocab_tree', stride: 2 },
+    ];
+
+  const runNsProcessAttempts = async (workingFramesDir, nsDataRoot, tagPrefix) => {
+    const sourceFrameFiles = await getImageFrameFiles(workingFramesDir);
+    const sourceFrameCount = sourceFrameFiles.length;
+    if (sourceFrameCount === 0) {
+      throw new Error('Frame bulunamadı: ns-process-data başlatılamadı');
+    }
+
+    const goodRegistrationTarget = isPhotoInput
+      ? Math.max(6, Math.floor(sourceFrameCount * 0.2))
+      : Math.max(24, Math.floor(sourceFrameCount * 0.25));
+    const minimumRegistration = isPhotoInput
+      ? Math.max(4, Math.floor(sourceFrameCount * 0.08))
+      : Math.max(10, Math.floor(sourceFrameCount * 0.1));
+    let bestAttempt = null;
+
+    for (const attempt of nsProcessAttempts) {
+      const attemptInputDir = attempt.stride === 1
+        ? workingFramesDir
+        : path.join(nsDataRoot, `sample_${tagPrefix}_${attempt.name}`);
+
+      const inputFrameCount = attempt.stride === 1
+        ? sourceFrameCount
+        : await sampleFramesToDir(workingFramesDir, sourceFrameFiles, attemptInputDir, attempt.stride);
+
+      const attemptOutDir = path.join(nsDataRoot, `${tagPrefix}_${attempt.name}`);
+      await fsAsync.rm(attemptOutDir, { recursive: true, force: true }).catch(() => {});
+      await fsAsync.mkdir(attemptOutDir, { recursive: true });
+
+      console.log(
+        `[job:${jobId}] ns-process-data denemesi: ${tagPrefix}/${attempt.name} | matching=${attempt.matchingMethod} | stride=${attempt.stride} | frame=${inputFrameCount}`
+      );
+
+      try {
+        await runExe(config.nsProcessData, [
+          'images',
+          '--data', attemptInputDir,
+          '--output-dir', attemptOutDir,
+          '--camera-type', 'perspective',
+          '--sfm-tool', 'colmap',
+          '--matching-method', attempt.matchingMethod,
+          '--num-downscales', isPhotoInput ? '1' : '2',
+          '--colmap-cmd', config.colmapExe,
+        ], 'ns-proc');
+
+        const registeredFrames = await readRegisteredFrameCount(attemptOutDir);
+        const ratio = inputFrameCount > 0 ? registeredFrames / inputFrameCount : 0;
+        console.log(
+          `[job:${jobId}] ns-process-data sonucu: ${tagPrefix}/${attempt.name} -> ${registeredFrames}/${inputFrameCount} (${(ratio * 100).toFixed(1)}%)`
+        );
+
+        const candidate = {
+          ...attempt,
+          inputFrameCount,
+          registeredFrames,
+          nsDataDir: attemptOutDir,
+          minimumRegistration,
+          sourceFrameCount,
+        };
+
+        if (!bestAttempt || candidate.registeredFrames > bestAttempt.registeredFrames) {
+          bestAttempt = candidate;
+        }
+
+        if (registeredFrames >= goodRegistrationTarget) {
+          break;
+        }
+      } catch (err) {
+        console.warn(`[job:${jobId}] ns-process-data başarısız (${tagPrefix}/${attempt.name}): ${err.message}`);
+      }
+    }
+
+    return bestAttempt;
+  };
+
+  onProgress(20);
+  let bestAttempt = await runNsProcessAttempts(framesDir, nsDataDir, 'orig');
+
+  const shouldRetryWithLowerFps =
+    (!bestAttempt || bestAttempt.registeredFrames < bestAttempt.minimumRegistration) &&
+    Boolean(options.filePath) &&
+    String(options.mimetype || '').startsWith('video/');
+
+  if (shouldRetryWithLowerFps) {
+    const initialFps = Number(options.initialFps) || null;
+    const retryFpsValues = [2, 1].filter((fps, idx, arr) => fps !== initialFps && arr.indexOf(fps) === idx);
+
+    for (const retryFps of retryFpsValues) {
+      const retryFramesDir = path.join(config.framesDir, `${jobId}_retry${retryFps}fps`);
+      await fsAsync.rm(retryFramesDir, { recursive: true, force: true }).catch(() => {});
+
+      console.warn(`[job:${jobId}] Poz sayısı düşük, video ${retryFps}fps ile yeniden örnekleniyor ve COLMAP tekrar deneniyor...`);
+      const retryFrames = await extractFrames(options.filePath, retryFramesDir, retryFps);
+      console.log(`[job:${jobId}] Retry için ${retryFrames.length} frame çıkarıldı (${retryFps}fps)`);
+
+      const retryRoot = path.join(config.uploadsDir, 'nsdata', jobId, `retry_${retryFps}fps`);
+      await fsAsync.rm(retryRoot, { recursive: true, force: true }).catch(() => {});
+      await fsAsync.mkdir(retryRoot, { recursive: true });
+
+      const retryBest = await runNsProcessAttempts(
+        retryFramesDir,
+        retryRoot,
+        `retry${retryFps}fps`
+      );
+
+      if (!bestAttempt || (retryBest && retryBest.registeredFrames > bestAttempt.registeredFrames)) {
+        bestAttempt = retryBest;
+      }
+
+      if (bestAttempt && bestAttempt.registeredFrames >= bestAttempt.minimumRegistration) {
+        break;
+      }
+    }
+  }
+
+  const minimumRegistration = bestAttempt?.minimumRegistration ?? 12;
+  if (!bestAttempt || bestAttempt.registeredFrames < minimumRegistration) {
+    const registered = bestAttempt?.registeredFrames ?? 0;
+    const total = bestAttempt?.inputFrameCount ?? bestAttempt?.sourceFrameCount ?? 0;
+    const hint = isPhotoInput
+      ? 'Fotoğraflar arasında daha fazla açı ve örtüşme olacak şekilde yeniden yükleyin.'
+      : 'Videoyu daha yavaş hareketle, daha iyi ışıkta ve sahnenin etrafında dolaşarak tekrar çekin.';
+    throw new Error(
+      `COLMAP yeterli kamera pozu çıkaramadı (${registered}/${total}). ${hint}`
+    );
+  }
+
+  if (bestAttempt.nsDataDir !== nsDataDir) {
+    await fsAsync.rm(nsDataDir, { recursive: true, force: true }).catch(() => {});
+    await fsAsync.cp(bestAttempt.nsDataDir, nsDataDir, { recursive: true });
+  }
+
+  console.log(
+    `[job:${jobId}] ns-process-data seçilen sonuç: ${bestAttempt.name} -> ${bestAttempt.registeredFrames}/${bestAttempt.inputFrameCount}`
+  );
 
   onProgress(35);
   if (trainMethod === 'splatfacto') {

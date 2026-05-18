@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import Link from 'next/link';
 
 const RENDER_ENGINE = process.env.NEXT_PUBLIC_RENDER_ENGINE_URL || 'http://localhost:3001';
@@ -17,6 +17,14 @@ const JOB_LABELS = {
   done:        'Tamamlandı',
   failed:      'İşlem başarısız',
 };
+
+function normalizePipelineError(message) {
+  const msg = String(message || 'İşlem başarısız oldu.');
+  if (msg.toLowerCase().includes('kamera pozu') || msg.toLowerCase().includes('colmap')) {
+    return 'Yeterli kamera pozu bulunamadı. Videoyu daha yavaş hareketle, iyi ışıkta ve sahneyi çevreleyerek tekrar çekin.';
+  }
+  return msg;
+}
 
 function fmt(bytes) {
   if (bytes < 1024) return `${bytes} B`;
@@ -38,7 +46,7 @@ function NavBar() {
   );
 }
 
-function DropZone({ onFile, accept, hint, isDragging, onDragOver, onDragLeave, onDrop, file }) {
+function DropZone({ onFile, accept, hint, isDragging, onDragOver, onDragLeave, onDrop, file, multiple = false }) {
   const inputRef = useRef();
   return (
     <div
@@ -56,10 +64,20 @@ function DropZone({ onFile, accept, hint, isDragging, onDragOver, onDragLeave, o
         type="file"
         className="hidden"
         accept={accept}
-        onChange={(e) => e.target.files[0] && onFile(e.target.files[0])}
+        multiple={multiple}
+        onChange={(e) => e.target.files.length && onFile(Array.from(e.target.files))}
       />
       <div className="py-12 px-6 flex flex-col items-center justify-center gap-3 text-center">
-        {file ? (
+        {file ? Array.isArray(file) ? (
+          <>
+            <div className="w-12 h-12 rounded-full bg-green-500/15 flex items-center justify-center text-2xl">✅</div>
+            <div>
+              <p className="font-semibold text-white">{file.length} dosya seçildi</p>
+              <p className="text-white/40 text-sm">{(file.reduce((s, f) => s + f.size, 0) / 1024 / 1024).toFixed(1)} MB</p>
+            </div>
+            <p className="text-white/30 text-xs">Değiştirmek için tıkla</p>
+          </>
+        ) : (
           <>
             <div className="w-12 h-12 rounded-full bg-green-500/15 flex items-center justify-center text-2xl">✅</div>
             <div>
@@ -181,27 +199,55 @@ function PipelineTab() {
   const [isDragging, setIsDragging] = useState(false);
   const pollRef = useRef(null);
 
-  const handleFile = useCallback((f) => {
+  useEffect(() => {
+    return () => {
+      clearInterval(pollRef.current);
+    };
+  }, []);
+
+  const handleFile = useCallback((files) => {
+    const fileArray = Array.isArray(files) ? files : [files];
     const ok = ['video/mp4', 'video/quicktime', 'video/x-msvideo', 'video/webm',
                  'image/jpeg', 'image/png', 'image/webp'];
-    if (!ok.includes(f.type)) {
-      setError('Desteklenmeyen format. MP4, MOV, AVI, WebM, JPG veya PNG yükleyin.');
+    
+    const invalid = fileArray.find(f => !ok.includes(f.type));
+    if (invalid) {
+      setError(`Desteklenmeyen format: ${invalid.name}. MP4, MOV, AVI, WebM, JPG veya PNG yükleyin.`);
       return;
     }
+    
+    const hasVideo = fileArray.some(f => f.type.startsWith('video/'));
+    const hasImage = fileArray.some(f => f.type.startsWith('image/'));
+    
+    if (hasVideo && hasImage) {
+      setError('Video ve fotoğrafları aynı anda yükleyemezsiniz. Tek tip dosya seçin.');
+      return;
+    }
+    
+    if (hasVideo && fileArray.length > 1) {
+      setError('Video yüklemede tek dosya desteklenir.');
+      return;
+    }
+    
+    if (hasImage && fileArray.length < 2) {
+      setError('Tek fotoğrafla 3D model güvenilir değildir. En az 2-3 farklı açıdan fotoğraf yükleyin.');
+      return;
+    }
+    
     setError(null);
-    setFile(f);
+    setFile(fileArray);
     setStage(S.IDLE);
     setJob(null);
     clearInterval(pollRef.current);
   }, []);
 
   const start = async () => {
-    if (!file) return;
+    if (!file || !file.length) return;
     setStage(S.UPLOADING);
     setError(null);
     try {
       const fd = new FormData();
-      fd.append('file', file);
+      file.forEach(f => fd.append('files', f));
       const res = await fetch(`${RENDER_ENGINE}/api/upload`, { method: 'POST', body: fd });
       if (!res.ok) throw new Error((await res.json()).error || 'Yükleme başarısız');
       const { jobId } = await res.json();
@@ -217,13 +263,13 @@ function PipelineTab() {
           if (j.status === 'failed') {
             clearInterval(pollRef.current);
             setStage(S.ERROR);
-            setError(j.error || 'İşlem başarısız oldu');
+            setError(normalizePipelineError(j.error));
           }
         } catch { /* network blip, keep polling */ }
       }, 2000);
     } catch (e) {
       setStage(S.ERROR);
-      setError(e.message);
+      setError(normalizePipelineError(e.message));
     }
   };
 
@@ -239,6 +285,9 @@ function PipelineTab() {
           Evinizin içini ve dışını <strong className="text-white/80">dönerek çektiğiniz bir video</strong> yükleyin.
           Sistem frame'leri çıkarıp 3D Gaussian Splatting ile işler.
         </p>
+        <div className="bg-white/[0.03] border border-white/10 rounded-xl p-3 text-xs text-white/50 leading-relaxed">
+          En iyi sonuç için: 10-30 saniye çekim, yumuşak kamera hareketi, net/iyi ışıklı görüntü ve aynı alanı farklı açılardan tarama.
+        </div>
         <div className="flex gap-4 text-xs text-white/30">
           <span>📹 MP4, MOV, AVI, WebM</span>
           <span>🖼 JPG, PNG, WebP</span>
@@ -252,13 +301,14 @@ function PipelineTab() {
         <>
           <DropZone
             file={file}
+            multiple={true}
             accept="video/mp4,video/quicktime,video/x-msvideo,video/webm,image/jpeg,image/png,image/webp"
             hint="MP4, MOV, AVI, WebM • JPG, PNG, WebP • Maks 500 MB"
             isDragging={isDragging}
             onFile={handleFile}
             onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
             onDragLeave={() => setIsDragging(false)}
-            onDrop={(e) => { e.preventDefault(); setIsDragging(false); e.dataTransfer.files[0] && handleFile(e.dataTransfer.files[0]); }}
+            onDrop={(e) => { e.preventDefault(); setIsDragging(false); e.dataTransfer.files.length && handleFile(e.dataTransfer.files); }}
           />
           <button
             onClick={start}

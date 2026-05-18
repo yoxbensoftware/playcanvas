@@ -4,7 +4,7 @@ import multer from 'multer';
 import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import config from '../config.js';
-import { createJob, updateJob } from '../store/jobStore.js';
+import { createJob, getAllJobs, updateJob } from '../store/jobStore.js';
 import { extractFrames } from '../pipeline/frameExtractor.js';
 import { processFramesToSplat } from '../pipeline/splatProcessor.js';
 
@@ -41,22 +41,51 @@ const upload = multer({
 });
 
 // POST /api/upload
-// Multipart form field: "file"
-router.post('/', upload.single('file'), (req, res) => {
-  if (!req.file) {
+// Multipart form fields: "file" (tek) veya "files" (çoklu)
+router.post('/', upload.any(), (req, res) => {
+  const files = Array.isArray(req.files) ? req.files : [];
+
+  const hasActiveJob = getAllJobs().some((j) => ['queued', 'extracting', 'processing'].includes(j.status));
+  if (hasActiveJob) {
+    return res.status(429).json({
+      error: 'Sistemde aktif bir render işi var. Lütfen mevcut işlem tamamlandıktan sonra tekrar deneyin.',
+    });
+  }
+
+  if (!files.length) {
     return res.status(400).json({ error: 'Dosya yüklenmedi' });
   }
 
+  const hasVideo = files.some((f) => f.mimetype.startsWith('video/'));
+  const hasImage = files.some((f) => f.mimetype.startsWith('image/'));
+
+  if (hasVideo && hasImage) {
+    return res.status(400).json({ error: 'Video ve fotoğrafları aynı anda yükleyemezsiniz. Tek tip dosya seçin.' });
+  }
+
+  if (hasVideo && files.length > 1) {
+    return res.status(400).json({ error: 'Video yüklemede tek dosya desteklenir.' });
+  }
+
+  if (hasImage && files.length < 2) {
+    return res.status(400).json({
+      error: 'Tek fotoğrafla 3D model üretimi güvenilir değildir. Lütfen en az 2-3 farklı açıdan fotoğraf yükleyin.',
+    });
+  }
+
   const jobId = uuidv4();
+  const firstFile = files[0];
   createJob(jobId, {
-    filename: req.file.filename,
-    originalName: req.file.originalname,
-    mimetype: req.file.mimetype,
-    filePath: req.file.path,
+    filename: firstFile.filename,
+    originalName: firstFile.originalname,
+    mimetype: firstFile.mimetype,
+    filePath: firstFile.path,
+    fileCount: files.length,
+    inputType: hasVideo ? 'video' : 'images',
   });
 
   // Pipeline'ı asenkron başlat
-  runPipeline(jobId, req.file).catch(async (err) => {
+  runPipeline(jobId, files).catch(async (err) => {
     console.error(`[job:${jobId}] Pipeline hatası:`, err.message);
 
     // If training/export completed but upload to filesystem failed, recover from local PLY.
@@ -71,40 +100,72 @@ router.post('/', upload.single('file'), (req, res) => {
       return;
     }
 
-    updateJob(jobId, { status: 'failed', error: err.message });
+    updateJob(jobId, { status: 'failed', error: humanizePipelineError(err.message) });
   });
 
   res.status(202).json({
     jobId,
     status: 'queued',
+    fileCount: files.length,
     statusUrl: `/api/jobs/${jobId}`,
   });
 });
 
-async function runPipeline(jobId, file) {
-  const isVideo = file.mimetype.startsWith('video/');
+async function runPipeline(jobId, files) {
+  const isVideo = files[0].mimetype.startsWith('video/');
   const framesDir = path.join(config.framesDir, jobId);
+  const initialFps = 2;
 
   updateJob(jobId, { status: 'extracting', progress: 5 });
 
   let frameCount;
   if (isVideo) {
-    const frames = await extractFrames(file.path, framesDir, 10);
+    const file = files[0];
+    // Varsayılanı 2fps tutuyoruz: bulanık/sabit videolarda COLMAP daha stabil eşleşiyor.
+    const frames = await extractFrames(file.path, framesDir, initialFps);
     frameCount = frames.length;
     console.log(`[job:${jobId}] ${frameCount} frame çıkarıldı`);
   } else {
-    // Tek fotoğraf — frame olarak kullan
-    frameCount = 1;
+    // Çoklu fotoğraf setini frame klasörüne kopyala (frame_0001.ext ...)
+    await fs.mkdir(framesDir, { recursive: true });
+    for (let i = 0; i < files.length; i += 1) {
+      const src = files[i].path;
+      const ext = path.extname(files[i].originalname).toLowerCase() || '.jpg';
+      const outName = `frame_${String(i + 1).padStart(4, '0')}${ext}`;
+      await fs.copyFile(src, path.join(framesDir, outName));
+    }
+    frameCount = files.length;
+    console.log(`[job:${jobId}] ${frameCount} fotoğraf frame olarak hazırlandı`);
   }
 
   updateJob(jobId, { status: 'processing', progress: 10, frameCount });
 
   const result = await processFramesToSplat(framesDir, jobId, (pct) => {
     updateJob(jobId, { progress: 10 + Math.round(pct * 0.88) });
-  }, { filePath: file.path, mimetype: file.mimetype });
+  }, {
+    filePath: files[0].path,
+    mimetype: files[0].mimetype,
+    initialFps,
+    inputType: isVideo ? 'video' : 'images',
+  });
 
   updateJob(jobId, { status: 'done', progress: 100, result });
   console.log(`[job:${jobId}] Tamamlandı`);
+}
+
+function humanizePipelineError(rawMessage) {
+  const msg = String(rawMessage || '').trim();
+  if (!msg) return 'İşlem başarısız oldu.';
+
+  if (msg.includes('COLMAP yeterli kamera pozu çıkaramadı')) {
+    return '3D çıkarımı için yeterli kamera pozu bulunamadı. Fotoğraflar arasında daha fazla açı ve örtüşme olacak şekilde yeniden yükleyin; video ise daha yavaş hareketle, daha iyi ışıkta ve sahnenin etrafında dolaşarak tekrar çekin.';
+  }
+
+  if (msg.toLowerCase().includes('filesystem')) {
+    return 'Model üretildi ancak dosya servisine yüklenemedi. Lütfen kısa süre sonra tekrar deneyin.';
+  }
+
+  return msg;
 }
 
 async function tryRecoverResultFromLocalPly(jobId) {

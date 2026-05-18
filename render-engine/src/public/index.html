@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>3DGS Pipeline - Yükleme</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: "Segoe UI", sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    .container {
+      background: #fff;
+      border-radius: 12px;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.25);
+      padding: 32px;
+      max-width: 640px;
+      width: 100%;
+    }
+    h1 { font-size: 28px; color: #222; margin-bottom: 8px; }
+    .subtitle { color: #666; font-size: 14px; margin-bottom: 24px; }
+    .health-check {
+      background: #f8f9fa;
+      border-radius: 6px;
+      padding: 10px;
+      margin-bottom: 18px;
+      color: #555;
+      font-size: 12px;
+    }
+    .upload-zone {
+      border: 2px dashed #667eea;
+      border-radius: 8px;
+      padding: 36px 18px;
+      text-align: center;
+      cursor: pointer;
+      background: #f8f9ff;
+      transition: .2s ease;
+    }
+    .upload-zone:hover { background: #f0f2ff; }
+    .upload-zone.dragover { background: #e8ecff; }
+    .upload-icon { font-size: 44px; margin-bottom: 10px; }
+    .upload-text { color: #333; font-weight: 600; margin-bottom: 4px; }
+    .upload-hint { color: #888; font-size: 12px; }
+    input[type="file"] { display: none; }
+
+    .buttons { display: flex; gap: 10px; margin-top: 16px; }
+    button {
+      flex: 1;
+      border: none;
+      border-radius: 6px;
+      padding: 12px 16px;
+      color: #fff;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      cursor: pointer;
+      font-weight: 600;
+    }
+    button:disabled { opacity: .5; cursor: not-allowed; }
+
+    .status {
+      margin-top: 16px;
+      padding: 12px;
+      border-radius: 6px;
+      display: none;
+      font-size: 14px;
+    }
+    .status.success { display: block; background: #d4edda; color: #155724; }
+    .status.error { display: block; background: #f8d7da; color: #721c24; }
+    .status.loading { display: block; background: #d1ecf1; color: #0c5460; }
+
+    .progress {
+      width: 100%;
+      height: 4px;
+      background: #e9ecef;
+      border-radius: 2px;
+      margin-top: 8px;
+      overflow: hidden;
+      display: none;
+    }
+    .progress-bar {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, #667eea, #764ba2);
+      transition: width .2s ease;
+    }
+
+    .jobs {
+      margin-top: 22px;
+      border-top: 1px solid #eee;
+      padding-top: 18px;
+      display: none;
+    }
+    .jobs h2 { font-size: 16px; margin-bottom: 10px; color: #333; }
+    .job-item { background: #f8f9fa; border-radius: 6px; padding: 10px; margin-bottom: 8px; font-size: 13px; }
+    .job-id { color: #556bd8; font-family: monospace; word-break: break-all; }
+    .job-status { margin-top: 6px; color: #555; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>3DGS Pipeline</h1>
+    <p class="subtitle">Video veya foto yukle ve islem baslat</p>
+
+    <div class="health-check">
+      Servis Durumu: <span id="health">Kontrol ediliyor...</span>
+    </div>
+
+    <form id="uploadForm">
+      <div class="upload-zone" id="uploadZone">
+        <div class="upload-icon">📹</div>
+        <div class="upload-text">Dosya Sec</div>
+        <div class="upload-hint">MP4, MOV, AVI, JPG, PNG, WebP</div>
+        <input type="file" id="mediaFile" accept="video/*,image/*" />
+      </div>
+
+      <div class="buttons">
+        <button type="button" id="pickBtn">Dosya Sec</button>
+        <button type="submit" id="submitBtn" disabled>Yuklemeyi Baslat</button>
+      </div>
+
+      <div id="status" class="status"></div>
+      <div id="progress" class="progress"><div id="progressBar" class="progress-bar"></div></div>
+    </form>
+
+    <div id="jobs" class="jobs">
+      <h2>Son Isler</h2>
+      <div id="jobsContainer"></div>
+    </div>
+  </div>
+
+  <script>
+    const uploadZone = document.getElementById('uploadZone');
+    const mediaFile = document.getElementById('mediaFile');
+    const pickBtn = document.getElementById('pickBtn');
+    const submitBtn = document.getElementById('submitBtn');
+    const statusDiv = document.getElementById('status');
+    const progress = document.getElementById('progress');
+    const progressBar = document.getElementById('progressBar');
+    const jobs = document.getElementById('jobs');
+    const jobsContainer = document.getElementById('jobsContainer');
+
+    async function checkHealth() {
+      try {
+        const res = await fetch('/health');
+        document.getElementById('health').textContent = res.ok ? 'Baglandi' : 'Hata';
+      } catch {
+        document.getElementById('health').textContent = 'Baglanti hatasi';
+      }
+    }
+
+    function renderSelectedFile() {
+      if (!mediaFile.files.length) {
+        submitBtn.disabled = true;
+        return;
+      }
+      const file = mediaFile.files[0];
+      const size = (file.size / 1024 / 1024).toFixed(2);
+      uploadZone.innerHTML = `
+        <div class="upload-icon">✅</div>
+        <div class="upload-text">${file.name}</div>
+        <div class="upload-hint">${size} MB</div>
+      `;
+      submitBtn.disabled = false;
+    }
+
+    pickBtn.addEventListener('click', () => mediaFile.click());
+    uploadZone.addEventListener('click', () => mediaFile.click());
+    mediaFile.addEventListener('change', renderSelectedFile);
+
+    uploadZone.addEventListener('dragover', (e) => { e.preventDefault(); uploadZone.classList.add('dragover'); });
+    uploadZone.addEventListener('dragleave', () => uploadZone.classList.remove('dragover'));
+    uploadZone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      uploadZone.classList.remove('dragover');
+      if (e.dataTransfer.files?.length) {
+        mediaFile.files = e.dataTransfer.files;
+        renderSelectedFile();
+      }
+    });
+
+    document.getElementById('uploadForm').addEventListener('submit', (e) => {
+      e.preventDefault();
+      if (!mediaFile.files.length) return;
+
+      const formData = new FormData();
+      formData.append('file', mediaFile.files[0]);
+
+      submitBtn.disabled = true;
+      progress.style.display = 'block';
+      progressBar.style.width = '0%';
+      statusDiv.className = 'status loading';
+      statusDiv.textContent = 'Yukleniyor...';
+
+      const xhr = new XMLHttpRequest();
+      xhr.upload.addEventListener('progress', (ev) => {
+        if (ev.lengthComputable) {
+          const pct = (ev.loaded / ev.total) * 100;
+          progressBar.style.width = pct + '%';
+        }
+      });
+
+      xhr.addEventListener('load', () => {
+        try {
+          const json = JSON.parse(xhr.responseText || '{}');
+          if (xhr.status >= 200 && xhr.status < 300) {
+            statusDiv.className = 'status success';
+            statusDiv.innerHTML = `Is olusturuldu. ID: <b>${json.jobId || '-'}</b>`;
+            progressBar.style.width = '100%';
+            mediaFile.value = '';
+            fetchJobs();
+          } else {
+            statusDiv.className = 'status error';
+            statusDiv.textContent = `Hata: ${json.error || 'Yukleme basarisiz'}`;
+            submitBtn.disabled = false;
+          }
+        } catch {
+          statusDiv.className = 'status error';
+          statusDiv.textContent = 'Hata: Beklenmeyen sunucu cevabi';
+          submitBtn.disabled = false;
+        }
+      });
+
+      xhr.addEventListener('error', () => {
+        statusDiv.className = 'status error';
+        statusDiv.textContent = 'Ag hatasi';
+        submitBtn.disabled = false;
+      });
+
+      xhr.open('POST', '/api/upload');
+      xhr.send(formData);
+    });
+
+    async function fetchJobs() {
+      try {
+        const res = await fetch('/api/jobs');
+        const list = await res.json();
+        if (!Array.isArray(list) || !list.length) return;
+
+        jobs.style.display = 'block';
+        jobsContainer.innerHTML = list.slice(0, 5).map((job) => `
+          <div class="job-item">
+            <div class="job-id">${job.id || '-'}</div>
+            <div class="job-status">Durum: ${job.status}${job.progress ? ` (${job.progress}%)` : ''}${job.error ? ` | Hata: ${job.error}` : ''}</div>
+          </div>
+        `).join('');
+      } catch {
+      }
+    }
+
+    checkHealth();
+    fetchJobs();
+    setInterval(fetchJobs, 5000);
+  </script>
+</body>
+</html>
