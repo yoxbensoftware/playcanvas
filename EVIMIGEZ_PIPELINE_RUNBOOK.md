@@ -206,3 +206,27 @@ Bu yüzden bir sonraki oturumda sıfırdan kurulum adımlarını tekrar denemek 
 
 - Untracked COLMAP zip / klasörleri repo tarihi için gerekli değilse commit etme.
 - Bu runbook, host uygulama çalıştırılırken aynı engellere tekrar takılmamak için referans olarak tutulmalı.
+
+## 2026-05-15 Geometri Çökmesi Tanısı (Fan/Pencil Görüntü)
+
+- Semptom: Viewer tarafında model oda yerine tek bir noktadan açılan fan/pencil bulutu gibi göründü.
+- Kesin neden: Son job çıktısında `transforms.json` içinde sadece `2` kamera pozu üretildi.
+   - Frame sayısı: `155`
+   - Register edilen poz: `2`
+   - Sonuç: Nerfstudio eğitimi teknik olarak tamamlanıyor ama yanlış geometriyi öğreniyor.
+
+### Uygulanan düzeltme
+
+- `render-engine/src/pipeline/splatProcessor.js` içinde Windows fallback için tek deneme yerine çoklu `ns-process-data` stratejisi eklendi:
+   1. `exhaustive-full`
+   2. `sequential-full`
+   3. `sequential-stride2`
+   4. `vocab-stride2`
+- Her denemeden sonra `transforms.json` okunup register edilen frame sayısı ölçülüyor.
+- En yüksek registration veren deneme seçilip eğitim o veriyle devam ediyor.
+- Registration çok düşükse (`< %12` veya min 12 frame) pipeline artık **erken fail** ediyor ve çöp model üretmüyor.
+
+### Beklenen etki
+
+- Indoor video gibi zor sahnelerde tek matcher'a bağlı kalınmadığı için COLMAP daha fazla pozu recover eder.
+- Geometri yetersizse kullanıcıya doğru hata döner; yanlış 3D çıktının "başarılı" görünmesi engellenir.
