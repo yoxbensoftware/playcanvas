@@ -17,6 +17,18 @@ filesystem/data/
 .DS_Store
 Thumbs.db
 
+# COLMAP binaries
+colmap-3.9.1/
+colmap-3.9.1-windows-cuda.zip
+colmap-x64-windows-cuda/
+
+# Build logs & artifacts
+render-engine/gsplat-build.log
+render-engine/src/public/
+
+# Large media / sample data
+sample-data/
+
 # PlayCanvas cloned repos — git.txt ile yeniden klonlanabilir
 # Bu klasörler kendi .git'lerine sahip, submodule olarak eklenmediler
 engine/
